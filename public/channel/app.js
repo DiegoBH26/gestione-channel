@@ -5076,7 +5076,7 @@ function renderMaster() {
 function renderRms() {
   return `${head("Ottimizzazione RMS Prices", "Sezione integrata del simulatore RMS: strutture, camere, target, calendario, matrici e storico simulazioni.")}
   <section class="panel rms-frame-panel">
-    <iframe class="rms-frame" src="rms/index.html" title="Ottimizzazione RMS Prices"></iframe>
+    <iframe class="rms-frame" src="public/channel/rms/index.html" title="Ottimizzazione RMS Prices"></iframe>
   </section>`;
 }
 function renderRoomNight() {
