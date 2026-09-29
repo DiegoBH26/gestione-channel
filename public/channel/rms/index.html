@@ -1,0 +1,328 @@
+﻿<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ottimizzazione RMS Prices</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-logo" src="../assets/barbarhouse-logo.png" alt="BarbarHouse"><div><h1>Ottimizzazione RMS Prices</h1><p>Prezzo medio consigliato per mercato, struttura e camera.</p></div>
+      </div>
+
+      <nav class="tabs" aria-label="Sezioni">
+        <button class="tab active" data-tab="home" title="Dashboard strutture">Home</button>
+        <button class="tab" data-tab="setup" title="Setup struttura">Setup</button>
+        <button class="tab" data-tab="calendar" title="Simulatore calendario">Simula</button>
+        <button class="tab" data-tab="simulations" title="Simulazioni generate">Storico</button>
+        <button class="tab" data-tab="matrix" title="Matrici tariffarie">Matrici</button>
+      </nav>
+
+      <div class="status-box">
+        <span>Indice finale</span>
+        <strong id="sideIndex">-</strong>
+      </div>
+      <div class="status-box">
+        <span>Prezzo base room</span>
+        <strong id="sideBasePrice">-</strong>
+      </div>
+      <div class="sidebar-history">
+        <span>Storico struttura</span>
+        <div id="sidebarSimulationList"></div>
+      </div>
+      <button class="secondary full" id="resetDemo" type="button">Ripristina demo</button>
+    </aside>
+
+    <main class="workspace">
+      <section class="topbar">
+        <div>
+          <h2 id="viewTitle">Dashboard strutture</h2>
+          <p id="viewSubtitle">Scegli una struttura salvata o crea un nuovo setup.</p>
+        </div>
+        <div class="topbar-meta">
+          <div class="structure-chip" id="currentStructureContext">
+            <span>Struttura attiva</span>
+            <strong>Hotel Demo</strong>
+          </div>
+          <div class="date-chip">
+            <span id="todayLabel"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="view active" id="home">
+        <div class="panel">
+          <div class="panel-title-row">
+            <div>
+              <h3>Archivio strutture</h3>
+              <p class="muted">Le strutture salvate mantengono fasce prezzo, camere, proporzioni, target e impostazioni setup.</p>
+            </div>
+            <button class="secondary primary-action" id="homeNewStructure" type="button">Nuova struttura</button>
+          </div>
+          <div class="structure-filters">
+            <label>Categoria
+              <select id="homeUnitFilter">
+                <option value="all">Tutte</option>
+                <option value="multiunit">Multiunit</option>
+                <option value="monounit">Monounit</option>
+              </select>
+            </label>
+            <label>Tipologia
+              <select id="homeTypeFilter">
+                <option value="all">Tutte</option>
+                <option value="hotel">Hotel</option>
+                <option value="bb">B&B</option>
+                <option value="masseria">Masseria</option>
+                <option value="residence">Residence</option>
+                <option value="villa">Villa</option>
+                <option value="casa">Casa</option>
+                <option value="appartamento">Appartamento</option>
+                <option value="altro">Altro</option>
+              </select>
+            </label>
+          </div>
+          <div class="structure-dashboard" id="structureDashboard"></div>
+        </div>
+      </section>
+
+      <section class="view" id="setup">
+        <div class="panel-grid">
+          <form class="panel" id="hotelForm">
+            <h3>Struttura</h3>
+            <div class="field-row">
+              <label>Strutture salvate
+                <select id="savedStructureSelect"></select>
+              </label>
+              <div class="compact-actions">
+                <button class="secondary compact-button" id="loadStructure" type="button">Carica</button>
+                <button class="secondary compact-button" id="newStructure" type="button">Nuova struttura</button>
+              </div>
+            </div>
+            <label>Nome struttura
+              <input id="hotelName" type="text" value="Hotel Demo">
+            </label>
+            <div class="field-row">
+              <label>Categoria
+                <select id="unitCategory">
+                  <option value="multiunit">Multiunit</option>
+                  <option value="monounit">Monounit</option>
+                </select>
+              </label>
+              <label>Tipologia
+                <select id="propertyType">
+                  <option value="hotel">Hotel</option>
+                  <option value="bb">B&B</option>
+                  <option value="masseria">Masseria</option>
+                  <option value="residence">Residence</option>
+                  <option value="villa">Villa</option>
+                  <option value="casa">Casa</option>
+                  <option value="appartamento">Appartamento</option>
+                  <option value="altro">Altro</option>
+                </select>
+              </label>
+            </div>
+            <div class="field-row">
+              <label>Camera base piÃ¹ economica
+                <select id="baseRoomType"></select>
+              </label>
+              <label>Prezzo base corrente
+                <input id="basePrice" type="number" min="0" step="1" value="100">
+              </label>
+            </div>
+            <div class="field-row">
+              <label>Min base room
+                <input id="minBasePrice" type="number" min="0" step="1" value="70">
+              </label>
+              <label>Max base room
+                <input id="maxBasePrice" type="number" min="0" step="1" value="180">
+              </label>
+            </div>
+          </form>
+
+          <div class="panel">
+            <div class="panel-title-row">
+              <h3>Tipologie camera</h3>
+              <div class="button-row">
+                <button class="secondary" id="saveSetup" type="button">Salva setup</button>
+                <button class="icon-button" id="addRoomType" type="button" title="Aggiungi camera">+</button>
+              </div>
+            </div>
+            <div class="room-table-header">
+              <span>Camera</span>
+              <span>Totali</span>
+              <span>Proporzione</span>
+              <span>Peso %</span>
+              <span></span>
+            </div>
+            <div class="room-table" id="roomTypes"></div>
+          </div>
+        </div>
+
+        <div class="panel wide-panel">
+          <div class="panel-title-row">
+            <div>
+              <h3>Fasce prezzo di partenza</h3>
+              <p class="muted">Queste ancore sono collegate alla percentuale di importanza RMS del mercato. Le tipologie camera derivano da qui tramite proporzione.</p>
+            </div>
+            <button class="secondary" id="resetAnchors" type="button">Reimposta fasce</button>
+          </div>
+          <div class="anchor-grid" id="priceAnchors"></div>
+        </div>
+
+        <div class="panel wide-panel">
+          <div class="panel-title-row">
+            <div>
+              <h3>ADR target e Revenue target per fascia</h3>
+              <p class="muted">Fasce 0-9 usate come riferimento obiettivo per calibrare il prezzo in base all'importanza applicata.</p>
+            </div>
+          </div>
+          <div class="target-table" id="targetRows"></div>
+        </div>
+
+      </section>
+
+      <section class="view" id="calendar">
+        <div class="calendar-layout">
+          <form class="panel simulator-card" id="simulationForm">
+            <h3>Calendario di interesse</h3>
+            <div class="field-row">
+              <label>Da
+                <input id="calendarFrom" type="date">
+              </label>
+              <label>A
+                <input id="calendarTo" type="date">
+              </label>
+            </div>
+            <div class="field-row">
+              <label>Periodo
+                <select id="periodType">
+                  <option value="weekday">Feriale</option>
+                  <option value="weekend">Weekend</option>
+                  <option value="event">Evento / alta domanda</option>
+                  <option value="low">Bassa stagione</option>
+                </select>
+              </label>
+              <label>Limite aumento sopra RMS %
+                <input id="maxIncrease" type="number" min="0" max="150" step="5" value="55">
+                <small>Massimo aumento consentito rispetto al prezzo RMS.</small>
+              </label>
+            </div>
+            <div class="field-row">
+              <label>ADR attuale prenotazioni
+                <input id="currentAdrGlobal" type="number" min="0" step="1" value="125">
+              </label>
+              <label>ADR target mensile
+                <input id="monthlyAdrTarget" type="number" min="0" step="1" value="125">
+              </label>
+              <label>Revenue target mensile
+                <input id="monthlyRevenueTarget" type="number" min="0" step="10" value="0">
+              </label>
+            </div>
+            <div class="field-row">
+              <button class="secondary align-end" id="generateCalendar" type="button">Genera calendario</button>
+            </div>
+          </form>
+
+          <div class="panel">
+            <div class="panel-title-row">
+              <div>
+                <h3>Dati giornalieri</h3>
+                <p class="muted">Inserisci RMS e camere vendute per tipologia. L'occupazione viene calcolata automaticamente.</p>
+              </div>
+            </div>
+            <div class="daily-inputs" id="dailyInputs"></div>
+            <div class="action-bar">
+              <button class="secondary primary-action" id="applyGenerate" type="button">Applica e genera prezzi</button>
+              <button class="secondary" id="refreshPricing" type="button">Aggiorna tabella</button>
+            </div>
+          </div>
+
+          <div class="panel results-panel">
+            <div class="panel-title-row">
+              <h3>Prezzi consigliati giorno per giorno</h3>
+              <div class="button-row">
+                <button class="secondary" id="saveSimulation" type="button">Salva simulazione</button>
+                <button class="secondary" id="exportCsv" type="button">CSV</button>
+              </div>
+            </div>
+            <div class="summary-grid">
+              <div>
+                <span>Giorni</span>
+                <strong id="marketBand">6</strong>
+              </div>
+              <div>
+                <span>Camere</span>
+                <strong id="hotelBand">9</strong>
+              </div>
+              <div>
+                <span>Occ. stimata periodo</span>
+                <strong id="periodOccupancy">-</strong>
+              </div>
+              <div>
+                <span>RN ancora vendibili</span>
+                <strong id="remainingRoomNights">-</strong>
+              </div>
+              <div>
+                <span>Media RMS inserita</span>
+                <strong id="rmsAverage">-</strong>
+              </div>
+              <div>
+                <span>Indice finale medio</span>
+                <strong id="finalIndex">-</strong>
+              </div>
+              <div>
+                <span>Revenue stimato</span>
+                <strong id="estimatedRevenue">-</strong>
+              </div>
+            </div>
+            <div class="recommendations" id="recommendations"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="matrix">
+        <div class="panel">
+          <h3>Matrici generate per tipologia</h3>
+          <p class="muted">Ogni matrice parte dalla camera base e applica proporzione, minimo, massimo e fascia di domanda.</p>
+          <div id="matrixTables" class="matrix-tables"></div>
+        </div>
+      </section>
+
+      <section class="view" id="simulations">
+        <div class="panel">
+          <div class="panel-title-row">
+            <div>
+              <h3>Simulazioni generate</h3>
+              <p class="muted">Storico cronologico delle analisi salvate per la struttura selezionata.</p>
+            </div>
+            <div class="history-toolbar">
+              <label>Struttura
+                <select id="historyStructureSelect"></select>
+              </label>
+              <button class="secondary" id="printSimulation" type="button">Stampa report PDF</button>
+            </div>
+          </div>
+          <div class="simulation-history" id="simulationHistory"></div>
+        </div>
+        <div class="panel report-panel" id="simulationReport"></div>
+      </section>
+    </main>
+  </div>
+
+  <template id="roomRowTemplate">
+    <div class="room-row">
+      <input class="room-name" type="text" aria-label="Nome camera">
+      <input class="room-count" type="number" min="1" step="1" aria-label="Camere totali">
+      <input class="room-ratio" type="number" min="0.5" max="4" step="0.05" aria-label="Proporzione">
+      <input class="room-weight" type="text" aria-label="Peso sulla struttura" readonly>
+      <button class="icon-button danger remove-room" type="button" title="Rimuovi">x</button>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
+
