@@ -75,8 +75,9 @@ let marketRunning = false;
 let marketMessage = "";
 let marketSort = "rank";
 let marketPollTimer = null;
-let marketMap = null;
-let marketAreaLayers = null;
+let marketGlobe = null;
+let marketGlobeResizeObserver = null;
+let marketDestinationTimer = null;
 let marketRuns = (() => {
   try { return JSON.parse(localStorage.getItem(MARKET_STORE_KEY) || "[]"); } catch (_) { return []; }
 })();
@@ -95,6 +96,17 @@ const defaultMarketDraft = {
   rooms: 1,
   maxResults: 50,
   ownPriceTotal: "",
+  propertyTypes: [],
+  poolMode: "any",
+  parking: false,
+  airConditioning: false,
+  freeCancellation: false,
+  breakfastIncluded: false,
+  stars: "any",
+  reviewScore: "any",
+  radiusKm: 10,
+  maxNightlyPrice: "",
+  referencePoint: null,
   area: null,
 };
 let marketDraft = (() => {
@@ -5679,107 +5691,148 @@ function persistMarketDraft() {
   try { localStorage.setItem(MARKET_DRAFT_STORE_KEY, JSON.stringify(marketDraft)); } catch (_) {}
 }
 function marketAreaLabel() {
-  if (!marketDraft.area?.bbox) return "Nessuna area selezionata: la ricerca usa la destinazione testuale.";
-  const { west, south, east, north } = marketDraft.area.bbox;
-  return `Area attiva: ${south.toFixed(4)}, ${west.toFixed(4)} - ${north.toFixed(4)}, ${east.toFixed(4)}`;
+  if (!marketDraft.referencePoint) return "Inserisci un Comune per localizzare l'area del benchmark.";
+  const located = marketRuns[0]?.listings?.filter(item => Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude))).length || 0;
+  const resultText = marketRuns[0] ? ` · ${located} strutture geolocalizzate` : "";
+  return `${marketDraft.referencePoint.name || marketDraft.destination} · raggio ${marketDraft.radiusKm || 10} km${resultText}`;
 }
-function marketLayerArea(layer) {
-  const bounds = layer.getBounds();
-  const geometry = layer.toGeoJSON().geometry;
+function marketRadiusArea(point, radiusKm) {
+  const lat = Number(point?.lat);
+  const lng = Number(point?.lng);
+  const radius = Math.max(1, Math.min(100, Number(radiusKm) || 10));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const latDelta = radius / 111.32;
+  const lngDelta = radius / (111.32 * Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+  const west = Number((lng - lngDelta).toFixed(6));
+  const south = Number((lat - latDelta).toFixed(6));
+  const east = Number((lng + lngDelta).toFixed(6));
+  const north = Number((lat + latDelta).toFixed(6));
   return {
-    type: geometry.type,
-    coordinates: geometry.coordinates,
-    bbox: {
-      west: Number(bounds.getWest().toFixed(6)),
-      south: Number(bounds.getSouth().toFixed(6)),
-      east: Number(bounds.getEast().toFixed(6)),
-      north: Number(bounds.getNorth().toFixed(6)),
-    },
+    type: "Polygon",
+    coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
+    bbox: { west, south, east, north },
   };
 }
-function updateMarketAreaState() {
-  const label = document.querySelector("[data-market-area-state]");
-  if (label) label.textContent = marketAreaLabel();
-  const clearButton = document.querySelector("[data-market-map-clear]");
-  if (clearButton) clearButton.disabled = !marketDraft.area;
-  persistMarketDraft();
+function marketGlobeData() {
+  const reference = marketDraft.referencePoint;
+  const run = marketRuns[0];
+  const competitors = (run?.listings || []).filter(item => Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude)));
+  const points = reference ? [{
+    lat: Number(reference.lat), lng: Number(reference.lng), color: "#e53935", radius: 0.012,
+    altitude: 0.025, label: marketDraft.propertyName || reference.name || marketDraft.destination, kind: "reference",
+  }] : [];
+  competitors.forEach(item => points.push({
+    lat: Number(item.latitude), lng: Number(item.longitude), color: "#36a8ff", radius: 0.008,
+    altitude: 0.012, label: item.name, nightly: item.nightly, kind: "competitor",
+  }));
+  const arcs = reference ? competitors.map((item, index) => ({
+    startLat: Number(reference.lat), startLng: Number(reference.lng), endLat: Number(item.latitude), endLng: Number(item.longitude),
+    color: index % 2 ? ["rgba(65,185,255,.2)", "rgba(65,185,255,.95)"] : ["rgba(255,255,255,.2)", "rgba(65,185,255,.9)"],
+  })) : [];
+  const offsets = [[8, -32], [44, -12], [-48, -12], [30, 20], [-42, 20], [4, 34]];
+  const labels = points.filter((item, index) => item.kind === "reference" || index <= 20).map((item, index) => ({
+    ...item,
+    text: item.kind === "reference" ? item.label : (item.nightly == null ? "n.d." : marketMoney(item.nightly)),
+    offset: item.kind === "reference" ? [10, 18] : offsets[(index - 1 + offsets.length) % offsets.length],
+  }));
+  return { points, arcs, labels, competitors };
 }
-async function centerMarketMapOnDestination() {
-  if (!marketMap) return;
+function refreshMarketGlobe() {
+  if (!marketGlobe) return;
+  const { points, arcs, labels } = marketGlobeData();
+  marketGlobe.pointsData(points).arcsData(arcs).htmlElementsData(labels);
+  const status = document.querySelector("[data-market-globe-state]");
+  if (status) status.textContent = marketAreaLabel();
+}
+function setMarketTargeting(active) {
+  document.getElementById("marketGlobeStage")?.classList.toggle("is-targeting", Boolean(active));
+}
+async function locateMarketComune({ animate = true } = {}) {
   const query = String(marketDraft.destination || "").trim();
-  const status = document.querySelector("[data-market-area-state]");
+  const status = document.querySelector("[data-market-globe-state]");
   if (!query) {
-    if (status) status.textContent = "Inserisci prima una destinazione o un indirizzo.";
+    if (status) status.textContent = "Inserisci prima il Comune.";
     return;
   }
-  if (status) status.textContent = "Ricerca dell'indirizzo sulla mappa...";
+  if (status) status.textContent = "Localizzazione del Comune...";
   try {
-    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=it&limit=1&q=${encodeURIComponent(query)}`;
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=it&limit=1&featuretype=city&q=${encodeURIComponent(query)}`;
     const response = await fetch(url, { headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const results = await response.json();
     if (!results.length) throw new Error("Localita non trovata");
-    marketMap.setView([Number(results[0].lat), Number(results[0].lon)], 14);
-    if (status) status.textContent = "Zona trovata. Ora disegna il perimetro del benchmark.";
+    const point = { lat: Number(results[0].lat), lng: Number(results[0].lon), name: results[0].display_name?.split(",")[0] || query };
+    marketDraft.referencePoint = point;
+    marketDraft.area = marketRadiusArea(point, marketDraft.radiusKm);
+    persistMarketDraft();
+    refreshMarketGlobe();
+    if (marketGlobe) {
+      marketGlobe.controls().autoRotate = false;
+      if (animate) {
+        setMarketTargeting(true);
+        marketGlobe.pointOfView({ lat: point.lat, lng: point.lng, altitude: 2.7 }, 250);
+        setTimeout(() => marketGlobe?.pointOfView({ lat: point.lat, lng: point.lng, altitude: 0.055 }, 2600), 280);
+        setTimeout(() => setMarketTargeting(false), 3000);
+      } else {
+        marketGlobe.pointOfView({ lat: point.lat, lng: point.lng, altitude: 0.055 }, 0);
+      }
+    }
+    if (status) status.textContent = marketAreaLabel();
   } catch (_) {
-    if (status) status.textContent = "Indirizzo non trovato automaticamente: usa zoom e trascinamento sulla mappa.";
+    if (status) status.textContent = "Comune non trovato. Controlla il nome e riprova.";
   }
 }
-function initMarketAreaMap() {
-  const container = document.getElementById("marketAreaMap");
+function initMarketGlobe() {
+  const container = document.getElementById("marketGlobe");
   if (!container) return;
-  if (!window.L || !window.L.Control?.Draw) {
-    container.innerHTML = '<div class="market-map-unavailable">Mappa non disponibile. Ricarica la pagina con Ctrl+F5.</div>';
+  if (!window.Globe) {
+    container.innerHTML = '<div class="market-map-unavailable">Globo 3D non disponibile. Ricarica la pagina con Ctrl+F5.</div>';
     return;
   }
-  if (marketMap && marketMap.getContainer() === container) {
-    setTimeout(() => marketMap.invalidateSize(), 0);
-    return;
-  }
-  if (marketMap) {
-    try { marketMap.remove(); } catch (_) {}
-  }
-  marketMap = L.map(container, { zoomControl: true }).setView([42.4, 12.5], 6);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>',
-  }).addTo(marketMap);
-  marketAreaLayers = new L.FeatureGroup().addTo(marketMap);
-  const drawControl = new L.Control.Draw({
-    position: "topright",
-    draw: {
-      polygon: { allowIntersection: false, showArea: true, shapeOptions: { color: "#0b5f8a", weight: 3, fillOpacity: 0.16 } },
-      rectangle: { shapeOptions: { color: "#0b5f8a", weight: 3, fillOpacity: 0.16 } },
-      polyline: false,
-      circle: false,
-      circlemarker: false,
-      marker: false,
-    },
-    edit: { featureGroup: marketAreaLayers, edit: true, remove: true },
+  container.replaceChildren();
+  const dimensions = () => ({ width: Math.max(320, container.clientWidth), height: Math.max(360, container.clientHeight) });
+  const size = dimensions();
+  marketGlobe = Globe()(container)
+    .width(size.width)
+    .height(size.height)
+    .backgroundColor("#030b18")
+    .backgroundImageUrl("https://unpkg.com/three-globe/example/img/night-sky.png")
+    .globeImageUrl("https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg")
+    .bumpImageUrl("https://unpkg.com/three-globe/example/img/earth-topology.png")
+    .showAtmosphere(true)
+    .atmosphereColor("#5cbcff")
+    .atmosphereAltitude(0.18)
+    .pointLat("lat").pointLng("lng").pointColor("color").pointRadius("radius").pointAltitude("altitude")
+    .pointLabel(item => `<b>${escapeHtml(item.label)}</b>${item.nightly == null ? "" : `<br>${marketMoney(item.nightly)} / notte`}`)
+    .arcStartLat("startLat").arcStartLng("startLng").arcEndLat("endLat").arcEndLng("endLng")
+    .arcColor("color").arcAltitude(0.018).arcStroke(0.08).arcDashLength(0.32).arcDashGap(0.12).arcDashAnimateTime(1700)
+    .htmlLat("lat").htmlLng("lng").htmlAltitude(0.014)
+    .htmlElement(item => {
+      const anchor = document.createElement("div");
+      anchor.className = "market-globe-anchor";
+      const label = document.createElement("div");
+      label.className = `market-globe-price ${item.kind === "reference" ? "is-reference" : ""}`;
+      label.textContent = item.text;
+      label.title = item.label;
+      label.style.transform = `translate(${item.offset?.[0] || 0}px, ${item.offset?.[1] || 0}px)`;
+      anchor.append(label);
+      return anchor;
+    })
+    .pointsTransitionDuration(600).arcsTransitionDuration(900);
+  marketGlobe.controls().autoRotate = !marketDraft.referencePoint;
+  marketGlobe.controls().autoRotateSpeed = 0.35;
+  marketGlobe.controls().enablePan = false;
+  marketGlobe.pointOfView(marketDraft.referencePoint
+    ? { lat: marketDraft.referencePoint.lat, lng: marketDraft.referencePoint.lng, altitude: 0.055 }
+    : { lat: 41.8, lng: 12.5, altitude: 2.35 }, 0);
+  refreshMarketGlobe();
+  marketGlobeResizeObserver?.disconnect();
+  marketGlobeResizeObserver = new ResizeObserver(() => {
+    if (!marketGlobe || !document.body.contains(container)) return;
+    const next = dimensions();
+    marketGlobe.width(next.width).height(next.height);
   });
-  marketMap.addControl(drawControl);
-  const applyLayer = layer => {
-    marketAreaLayers.clearLayers();
-    marketAreaLayers.addLayer(layer);
-    marketDraft.area = marketLayerArea(layer);
-    updateMarketAreaState();
-  };
-  marketMap.on(L.Draw.Event.CREATED, event => applyLayer(event.layer));
-  marketMap.on(L.Draw.Event.EDITED, event => event.layers.eachLayer(layer => applyLayer(layer)));
-  marketMap.on(L.Draw.Event.DELETED, () => {
-    marketDraft.area = null;
-    updateMarketAreaState();
-  });
-  if (marketDraft.area?.coordinates) {
-    try {
-      const layer = L.geoJSON({ type: "Feature", properties: {}, geometry: { type: marketDraft.area.type, coordinates: marketDraft.area.coordinates } }, {
-        style: { color: "#0b5f8a", weight: 3, fillOpacity: 0.16 },
-      });
-      layer.eachLayer(item => marketAreaLayers.addLayer(item));
-      marketMap.fitBounds(marketAreaLayers.getBounds(), { padding: [24, 24] });
-    } catch (_) {}
-  }
-  setTimeout(() => marketMap.invalidateSize(), 0);
+  marketGlobeResizeObserver.observe(container);
 }
 function marketCsvCell(value) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
@@ -5834,6 +5887,7 @@ async function startMarketAnalysis() {
     render();
     return;
   }
+  if (!marketDraft.referencePoint) await locateMarketComune({ animate: false });
   marketRunning = true;
   marketMessage = "Collegamento all'agente locale...";
   render();
@@ -5860,6 +5914,12 @@ async function startMarketAnalysis() {
 }
 function renderMarketAnalysis() {
   const run = marketRuns[0] || null;
+  const selectedTypes = Array.isArray(marketDraft.propertyTypes) ? marketDraft.propertyTypes : [];
+  const typeOptions = [
+    ["hotel", "Hotel"], ["bb", "B&B"], ["residence", "Residence / Aparthotel"],
+    ["apartment", "Appartamenti"], ["holiday_home", "Case vacanze"], ["villa", "Ville"],
+    ["resort", "Resort"], ["guesthouse", "Affittacamere"],
+  ];
   const listings = run ? [...(run.listings || [])].sort((a, b) => {
     if (marketSort === "nightly") return (a.nightly ?? Number.MAX_SAFE_INTEGER) - (b.nightly ?? Number.MAX_SAFE_INTEGER);
     if (marketSort === "score") return (b.score ?? -1) - (a.score ?? -1);
@@ -5882,7 +5942,7 @@ function renderMarketAnalysis() {
     <section class="panel market-search-panel">
       <div class="market-form">
         <label class="wide"><span>Struttura di riferimento</span><input data-market-field="propertyName" value="${escapeHtml(marketDraft.propertyName)}" placeholder="Nome struttura"></label>
-        <label class="wide"><span>Destinazione / zona / indirizzo *</span><input data-market-field="destination" value="${escapeHtml(marketDraft.destination)}" placeholder="Es. Bari centro o Via Roma 10, Lecce"></label>
+        <label class="wide"><span>Comune *</span><input data-market-field="destination" value="${escapeHtml(marketDraft.destination)}" placeholder="Es. Salve"></label>
         <label><span>Arrivo *</span><input type="date" data-market-field="checkin" value="${escapeHtml(marketDraft.checkin)}"></label>
         <label><span>Partenza *</span><input type="date" data-market-field="checkout" value="${escapeHtml(marketDraft.checkout)}"></label>
         <label><span>Adulti</span><input type="number" min="1" max="30" data-market-field="adults" value="${marketDraft.adults}"></label>
@@ -5892,16 +5952,37 @@ function renderMarketAnalysis() {
         <label><span>Tuo prezzo totale</span><input inputmode="decimal" data-market-field="ownPriceTotal" value="${escapeHtml(marketDraft.ownPriceTotal)}" placeholder="Opzionale"></label>
         <div class="market-start"><button class="primary" data-market-start ${marketRunning ? "disabled" : ""}>${marketRunning ? "Raccolta in corso..." : "Avvia benchmark"}</button></div>
       </div>
-      <p class="market-disclaimer">Si apre una finestra Chrome dedicata. Non chiuderla durante la raccolta. Il sistema legge soltanto risultati pubblici e si ferma davanti a login, CAPTCHA o blocchi.</p>
+      <div class="market-filter-panel">
+        <div class="market-filter-title"><div><b>Filtri benchmark</b><span>Riprendono i principali criteri disponibili su Booking.</span></div><button data-market-filters-reset>Reimposta filtri</button></div>
+        <fieldset class="market-type-filters"><legend>Tipo di struttura</legend>${typeOptions.map(([value, label]) => `<label><input type="checkbox" data-market-type="${value}" ${selectedTypes.includes(value) ? "checked" : ""}><span>${label}</span></label>`).join("")}</fieldset>
+        <div class="market-filter-grid">
+          <label><span>Piscina</span><select data-market-filter-field="poolMode"><option value="any" ${marketDraft.poolMode === "any" ? "selected" : ""}>Indifferente</option><option value="with" ${marketDraft.poolMode === "with" ? "selected" : ""}>Con piscina</option><option value="without" ${marketDraft.poolMode === "without" ? "selected" : ""}>Senza piscina</option></select></label>
+          <label><span>Categoria</span><select data-market-filter-field="stars"><option value="any" ${marketDraft.stars === "any" ? "selected" : ""}>Qualsiasi</option>${[1,2,3,4,5].map(value => `<option value="${value}" ${String(marketDraft.stars) === String(value) ? "selected" : ""}>${value} stelle</option>`).join("")}</select></label>
+          <label><span>Voto minimo</span><select data-market-filter-field="reviewScore"><option value="any" ${marketDraft.reviewScore === "any" ? "selected" : ""}>Qualsiasi</option><option value="7" ${String(marketDraft.reviewScore) === "7" ? "selected" : ""}>7+</option><option value="8" ${String(marketDraft.reviewScore) === "8" ? "selected" : ""}>8+</option><option value="9" ${String(marketDraft.reviewScore) === "9" ? "selected" : ""}>9+</option></select></label>
+          <label><span>Raggio area</span><select data-market-filter-field="radiusKm">${[2,5,10,20,50].map(value => `<option value="${value}" ${Number(marketDraft.radiusKm) === value ? "selected" : ""}>${value} km</option>`).join("")}</select></label>
+          <label><span>Prezzo massimo/notte</span><input inputmode="decimal" data-market-filter-field="maxNightlyPrice" value="${escapeHtml(marketDraft.maxNightlyPrice)}" placeholder="Nessun limite"></label>
+        </div>
+        <div class="market-amenity-filters">
+          <label><input type="checkbox" data-market-filter="parking" ${marketDraft.parking ? "checked" : ""}><span>Parcheggio</span></label>
+          <label><input type="checkbox" data-market-filter="airConditioning" ${marketDraft.airConditioning ? "checked" : ""}><span>Aria condizionata</span></label>
+          <label><input type="checkbox" data-market-filter="freeCancellation" ${marketDraft.freeCancellation ? "checked" : ""}><span>Cancellazione gratuita</span></label>
+          <label><input type="checkbox" data-market-filter="breakfastIncluded" ${marketDraft.breakfastIncluded ? "checked" : ""}><span>Colazione inclusa</span></label>
+        </div>
+      </div>
+      <p class="market-disclaimer">Si apre una sessione Chrome dedicata che conserva preferenze e consenso cookie. Il sistema naviga i risultati pubblici come un normale cliente e si ferma davanti a login, CAPTCHA o blocchi.</p>
       ${marketMessage ? `<div class="market-status" role="status">${escapeHtml(marketMessage)}</div>` : ""}
     </section>
-    <section class="panel market-map-panel">
+    <section class="market-map-panel market-globe-panel">
       <div class="market-map-heading">
-        <div><h3>Area geografica del benchmark</h3><p>Centra la destinazione, usa lo zoom e disegna un rettangolo o un perimetro. Booking verrà interrogato soltanto sull'area selezionata.</p></div>
-        <div class="market-map-actions"><button data-market-map-center>Centra destinazione</button><button data-market-map-clear ${marketDraft.area ? "" : "disabled"}>Cancella area</button></div>
+        <div><h3>Mappa orbitale del mercato</h3><p>Il punto rosso identifica il Comune di riferimento; le strutture rilevate sono collegate in blu con il prezzo per notte.</p></div>
+        <div class="market-map-actions"><button class="primary" data-market-globe-locate>Localizza Comune</button><button data-market-globe-reset>Vista globale</button></div>
       </div>
-      <div id="marketAreaMap" class="market-area-map" aria-label="Mappa per selezionare l'area del benchmark"></div>
-      <p class="market-area-state" data-market-area-state>${escapeHtml(marketAreaLabel())}</p>
+      <div id="marketGlobeStage" class="market-globe-stage">
+        <div id="marketGlobe" class="market-globe" aria-label="Globo 3D del benchmark"></div>
+        <div class="market-target-reticle" aria-hidden="true"><i></i><i></i><i></i><i></i><span></span></div>
+        <div class="market-globe-legend"><span><i class="reference"></i> Comune</span><span><i class="competitor"></i> Strutture rilevate</span></div>
+      </div>
+      <p class="market-area-state" data-market-globe-state>${escapeHtml(marketAreaLabel())}</p>
     </section>
     ${run ? `<section class="panel market-results-head">
       <div><h3>${escapeHtml(run.query?.destination || "Ultima rilevazione")}</h3><p>${escapeHtml(run.query?.checkin || "")} → ${escapeHtml(run.query?.checkout || "")} · ${run.query?.nights || 0} notti · ${run.query?.adults || 0} adulti · ${escapeHtml(new Date(run.generatedAt).toLocaleString("it-IT"))}</p></div>
@@ -6008,18 +6089,56 @@ function bindPageEvents(root) {
       marketDraft[field] = ["adults", "children", "rooms", "maxResults"].includes(field)
         ? Number(control.value)
         : control.value;
+      if (field === "destination") {
+        marketDraft.referencePoint = null;
+        marketDraft.area = null;
+      }
       persistMarketDraft();
     };
     control.oninput = update;
     control.onchange = update;
   });
   root.querySelector("[data-market-start]")?.addEventListener("click", () => void startMarketAnalysis());
-  root.querySelector("[data-market-map-center]")?.addEventListener("click", () => void centerMarketMapOnDestination());
-  root.querySelector("[data-market-map-clear]")?.addEventListener("click", () => {
-    marketAreaLayers?.clearLayers();
-    marketDraft.area = null;
+  root.querySelector('[data-market-field="destination"]')?.addEventListener("change", () => {
+    clearTimeout(marketDestinationTimer);
+    marketDestinationTimer = setTimeout(() => void locateMarketComune(), 150);
+  });
+  root.querySelectorAll("[data-market-type]").forEach(control => control.addEventListener("change", () => {
+    marketDraft.propertyTypes = [...root.querySelectorAll("[data-market-type]:checked")].map(item => item.dataset.marketType);
+    persistMarketDraft();
+  }));
+  root.querySelectorAll("[data-market-filter]").forEach(control => control.addEventListener("change", () => {
+    marketDraft[control.dataset.marketFilter] = control.checked;
+    persistMarketDraft();
+  }));
+  root.querySelectorAll("[data-market-filter-field]").forEach(control => {
+    const update = () => {
+      const field = control.dataset.marketFilterField;
+      marketDraft[field] = field === "radiusKm" ? Number(control.value) : control.value;
+      if (field === "radiusKm" && marketDraft.referencePoint) {
+        marketDraft.area = marketRadiusArea(marketDraft.referencePoint, marketDraft.radiusKm);
+        const status = root.querySelector("[data-market-globe-state]");
+        if (status) status.textContent = marketAreaLabel();
+      }
+      persistMarketDraft();
+    };
+    control.oninput = update;
+    control.onchange = update;
+  });
+  root.querySelector("[data-market-filters-reset]")?.addEventListener("click", () => {
+    Object.assign(marketDraft, {
+      propertyTypes: [], poolMode: "any", parking: false, airConditioning: false,
+      freeCancellation: false, breakfastIncluded: false, stars: "any", reviewScore: "any",
+      radiusKm: 10, maxNightlyPrice: "",
+    });
+    if (marketDraft.referencePoint) marketDraft.area = marketRadiusArea(marketDraft.referencePoint, 10);
     persistMarketDraft();
     render();
+  });
+  root.querySelector("[data-market-globe-locate]")?.addEventListener("click", () => void locateMarketComune());
+  root.querySelector("[data-market-globe-reset]")?.addEventListener("click", () => {
+    marketGlobe?.pointOfView({ lat: 41.8, lng: 12.5, altitude: 2.35 }, 1400);
+    if (marketGlobe) marketGlobe.controls().autoRotate = true;
   });
   root.querySelector("[data-market-sort]")?.addEventListener("change", event => {
     marketSort = event.currentTarget.value;
@@ -6041,7 +6160,7 @@ function bindPageEvents(root) {
     render();
     showSaveConfirmation("Rilevazione eliminata dallo storico");
   });
-  if (currentPage === "market") initMarketAreaMap();
+  if (currentPage === "market") initMarketGlobe();
   root.querySelectorAll("[data-open-rates-lab]").forEach(button => button.onclick = () => {
     const groupId = button.dataset.openRatesLab;
     initRatesLab(groupId, !ratesLab || ratesLab.groupId !== groupId);
