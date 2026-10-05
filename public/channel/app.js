@@ -1,5 +1,6 @@
 const DATA = window.WORKBOOK_DATA;
 const STORE_KEY = "gestione-channel-state-v4-custom-promos";
+const ACTIVE_PAGE_STORE_KEY = "gestione-channel-active-page-v1";
 const STRATEGY_PRESET_VERSION = "20260813-case-vacanze-policy-preset-v1";
 const CALC_ENGINE_VERSION = "20260824-nightly-seasonality-v1";
 const pages = [
@@ -23,7 +24,14 @@ const pages = [
 ];
 
 let state;
-let currentPage = "dashboard";
+let currentPage = (() => {
+  try {
+    const savedPage = localStorage.getItem(ACTIVE_PAGE_STORE_KEY);
+    return pages.some(page => page.id === savedPage) ? savedPage : "dashboard";
+  } catch (_) {
+    return "dashboard";
+  }
+})();
 let currentSheet = DATA.sheets[0].name;
 let sheetSearch = "";
 let pageHistory = [currentPage];
@@ -60,6 +68,7 @@ let pageDomCache = new Map();
 let pageRenderRevision = 0;
 let renderMemo = null;
 const MARKET_STORE_KEY = "gestione-channel-market-benchmarks-v1";
+const MARKET_DRAFT_STORE_KEY = "gestione-channel-market-draft-v1";
 const MARKET_API_BASE = ["127.0.0.1", "localhost"].includes(window.location.hostname) ? "" : "http://127.0.0.1:8787";
 const marketApiUrl = path => `${MARKET_API_BASE}${path}`;
 let marketRunning = false;
@@ -74,7 +83,7 @@ function marketIsoOffset(days) {
   date.setDate(date.getDate() + days);
   return date.toISOString().slice(0, 10);
 }
-let marketDraft = {
+const defaultMarketDraft = {
   propertyName: "",
   destination: "",
   checkin: marketIsoOffset(30),
@@ -85,6 +94,13 @@ let marketDraft = {
   maxResults: 50,
   ownPriceTotal: "",
 };
+let marketDraft = (() => {
+  try {
+    return { ...defaultMarketDraft, ...JSON.parse(localStorage.getItem(MARKET_DRAFT_STORE_KEY) || "{}") };
+  } catch (_) {
+    return { ...defaultMarketDraft };
+  }
+})();
 
 const SEASONALITY_RULES = [
   { id: "altissima", label: "Altissima stagione", markup: 0.15 },
@@ -2038,6 +2054,7 @@ function fmt(sheet, addr) { return getCell(sheet, addr).s?.numFmt || null; }
 function navigate(page, push = true, fresh = false) {
   if (fresh) clearPageDomCache(page);
   currentPage = page;
+  try { localStorage.setItem(ACTIVE_PAGE_STORE_KEY, currentPage); } catch (_) {}
   if (push) {
     pageHistory = pageHistory.slice(0, pageIndex + 1);
     pageHistory.push(page);
@@ -5874,6 +5891,7 @@ function bindPageEvents(root) {
       marketDraft[field] = ["adults", "children", "rooms", "maxResults"].includes(field)
         ? Number(control.value)
         : control.value;
+      try { localStorage.setItem(MARKET_DRAFT_STORE_KEY, JSON.stringify(marketDraft)); } catch (_) {}
     };
     control.oninput = update;
     control.onchange = update;
