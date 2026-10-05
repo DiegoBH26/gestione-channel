@@ -75,6 +75,8 @@ let marketRunning = false;
 let marketMessage = "";
 let marketSort = "rank";
 let marketPollTimer = null;
+let marketMap = null;
+let marketAreaLayers = null;
 let marketRuns = (() => {
   try { return JSON.parse(localStorage.getItem(MARKET_STORE_KEY) || "[]"); } catch (_) { return []; }
 })();
@@ -93,6 +95,7 @@ const defaultMarketDraft = {
   rooms: 1,
   maxResults: 50,
   ownPriceTotal: "",
+  area: null,
 };
 let marketDraft = (() => {
   try {
@@ -5672,6 +5675,112 @@ function marketMoney(value) {
 function persistMarketRuns() {
   localStorage.setItem(MARKET_STORE_KEY, JSON.stringify(marketRuns.slice(0, 30)));
 }
+function persistMarketDraft() {
+  try { localStorage.setItem(MARKET_DRAFT_STORE_KEY, JSON.stringify(marketDraft)); } catch (_) {}
+}
+function marketAreaLabel() {
+  if (!marketDraft.area?.bbox) return "Nessuna area selezionata: la ricerca usa la destinazione testuale.";
+  const { west, south, east, north } = marketDraft.area.bbox;
+  return `Area attiva: ${south.toFixed(4)}, ${west.toFixed(4)} - ${north.toFixed(4)}, ${east.toFixed(4)}`;
+}
+function marketLayerArea(layer) {
+  const bounds = layer.getBounds();
+  const geometry = layer.toGeoJSON().geometry;
+  return {
+    type: geometry.type,
+    coordinates: geometry.coordinates,
+    bbox: {
+      west: Number(bounds.getWest().toFixed(6)),
+      south: Number(bounds.getSouth().toFixed(6)),
+      east: Number(bounds.getEast().toFixed(6)),
+      north: Number(bounds.getNorth().toFixed(6)),
+    },
+  };
+}
+function updateMarketAreaState() {
+  const label = document.querySelector("[data-market-area-state]");
+  if (label) label.textContent = marketAreaLabel();
+  const clearButton = document.querySelector("[data-market-map-clear]");
+  if (clearButton) clearButton.disabled = !marketDraft.area;
+  persistMarketDraft();
+}
+async function centerMarketMapOnDestination() {
+  if (!marketMap) return;
+  const query = String(marketDraft.destination || "").trim();
+  const status = document.querySelector("[data-market-area-state]");
+  if (!query) {
+    if (status) status.textContent = "Inserisci prima una destinazione o un indirizzo.";
+    return;
+  }
+  if (status) status.textContent = "Ricerca dell'indirizzo sulla mappa...";
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=it&limit=1&q=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const results = await response.json();
+    if (!results.length) throw new Error("Localita non trovata");
+    marketMap.setView([Number(results[0].lat), Number(results[0].lon)], 14);
+    if (status) status.textContent = "Zona trovata. Ora disegna il perimetro del benchmark.";
+  } catch (_) {
+    if (status) status.textContent = "Indirizzo non trovato automaticamente: usa zoom e trascinamento sulla mappa.";
+  }
+}
+function initMarketAreaMap() {
+  const container = document.getElementById("marketAreaMap");
+  if (!container) return;
+  if (!window.L || !window.L.Control?.Draw) {
+    container.innerHTML = '<div class="market-map-unavailable">Mappa non disponibile. Ricarica la pagina con Ctrl+F5.</div>';
+    return;
+  }
+  if (marketMap && marketMap.getContainer() === container) {
+    setTimeout(() => marketMap.invalidateSize(), 0);
+    return;
+  }
+  if (marketMap) {
+    try { marketMap.remove(); } catch (_) {}
+  }
+  marketMap = L.map(container, { zoomControl: true }).setView([42.4, 12.5], 6);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>',
+  }).addTo(marketMap);
+  marketAreaLayers = new L.FeatureGroup().addTo(marketMap);
+  const drawControl = new L.Control.Draw({
+    position: "topright",
+    draw: {
+      polygon: { allowIntersection: false, showArea: true, shapeOptions: { color: "#0b5f8a", weight: 3, fillOpacity: 0.16 } },
+      rectangle: { shapeOptions: { color: "#0b5f8a", weight: 3, fillOpacity: 0.16 } },
+      polyline: false,
+      circle: false,
+      circlemarker: false,
+      marker: false,
+    },
+    edit: { featureGroup: marketAreaLayers, edit: true, remove: true },
+  });
+  marketMap.addControl(drawControl);
+  const applyLayer = layer => {
+    marketAreaLayers.clearLayers();
+    marketAreaLayers.addLayer(layer);
+    marketDraft.area = marketLayerArea(layer);
+    updateMarketAreaState();
+  };
+  marketMap.on(L.Draw.Event.CREATED, event => applyLayer(event.layer));
+  marketMap.on(L.Draw.Event.EDITED, event => event.layers.eachLayer(layer => applyLayer(layer)));
+  marketMap.on(L.Draw.Event.DELETED, () => {
+    marketDraft.area = null;
+    updateMarketAreaState();
+  });
+  if (marketDraft.area?.coordinates) {
+    try {
+      const layer = L.geoJSON({ type: "Feature", properties: {}, geometry: { type: marketDraft.area.type, coordinates: marketDraft.area.coordinates } }, {
+        style: { color: "#0b5f8a", weight: 3, fillOpacity: 0.16 },
+      });
+      layer.eachLayer(item => marketAreaLayers.addLayer(item));
+      marketMap.fitBounds(marketAreaLayers.getBounds(), { padding: [24, 24] });
+    } catch (_) {}
+  }
+  setTimeout(() => marketMap.invalidateSize(), 0);
+}
 function marketCsvCell(value) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
@@ -5786,6 +5895,14 @@ function renderMarketAnalysis() {
       <p class="market-disclaimer">Si apre una finestra Chrome dedicata. Non chiuderla durante la raccolta. Il sistema legge soltanto risultati pubblici e si ferma davanti a login, CAPTCHA o blocchi.</p>
       ${marketMessage ? `<div class="market-status" role="status">${escapeHtml(marketMessage)}</div>` : ""}
     </section>
+    <section class="panel market-map-panel">
+      <div class="market-map-heading">
+        <div><h3>Area geografica del benchmark</h3><p>Centra la destinazione, usa lo zoom e disegna un rettangolo o un perimetro. Booking verrà interrogato soltanto sull'area selezionata.</p></div>
+        <div class="market-map-actions"><button data-market-map-center>Centra destinazione</button><button data-market-map-clear ${marketDraft.area ? "" : "disabled"}>Cancella area</button></div>
+      </div>
+      <div id="marketAreaMap" class="market-area-map" aria-label="Mappa per selezionare l'area del benchmark"></div>
+      <p class="market-area-state" data-market-area-state>${escapeHtml(marketAreaLabel())}</p>
+    </section>
     ${run ? `<section class="panel market-results-head">
       <div><h3>${escapeHtml(run.query?.destination || "Ultima rilevazione")}</h3><p>${escapeHtml(run.query?.checkin || "")} → ${escapeHtml(run.query?.checkout || "")} · ${run.query?.nights || 0} notti · ${run.query?.adults || 0} adulti · ${escapeHtml(new Date(run.generatedAt).toLocaleString("it-IT"))}</p></div>
       <div><button data-market-export="csv">Esporta CSV</button><button data-market-export="json">Esporta JSON</button></div>
@@ -5891,12 +6008,19 @@ function bindPageEvents(root) {
       marketDraft[field] = ["adults", "children", "rooms", "maxResults"].includes(field)
         ? Number(control.value)
         : control.value;
-      try { localStorage.setItem(MARKET_DRAFT_STORE_KEY, JSON.stringify(marketDraft)); } catch (_) {}
+      persistMarketDraft();
     };
     control.oninput = update;
     control.onchange = update;
   });
   root.querySelector("[data-market-start]")?.addEventListener("click", () => void startMarketAnalysis());
+  root.querySelector("[data-market-map-center]")?.addEventListener("click", () => void centerMarketMapOnDestination());
+  root.querySelector("[data-market-map-clear]")?.addEventListener("click", () => {
+    marketAreaLayers?.clearLayers();
+    marketDraft.area = null;
+    persistMarketDraft();
+    render();
+  });
   root.querySelector("[data-market-sort]")?.addEventListener("change", event => {
     marketSort = event.currentTarget.value;
     render();
@@ -5917,6 +6041,7 @@ function bindPageEvents(root) {
     render();
     showSaveConfirmation("Rilevazione eliminata dallo storico");
   });
+  if (currentPage === "market") initMarketAreaMap();
   root.querySelectorAll("[data-open-rates-lab]").forEach(button => button.onclick = () => {
     const groupId = button.dataset.openRatesLab;
     initRatesLab(groupId, !ratesLab || ratesLab.groupId !== groupId);
