@@ -1,9 +1,10 @@
-﻿const DATA = window.WORKBOOK_DATA;
+const DATA = window.WORKBOOK_DATA;
 const STORE_KEY = "gestione-channel-state-v4-custom-promos";
 const STRATEGY_PRESET_VERSION = "20260813-case-vacanze-policy-preset-v1";
 const CALC_ENGINE_VERSION = "20260824-nightly-seasonality-v1";
 const pages = [
   { id: "dashboard", label: "Riepilogo" },
+  { id: "market", label: "Analisi di mercato" },
   { id: "guide", label: "? Guida tecnica" },
   { id: "inputs", label: "Parametri" },
   { id: "booking", label: "Booking.com" },
@@ -58,6 +59,32 @@ let simulationHistoryReportOpen = {};
 let pageDomCache = new Map();
 let pageRenderRevision = 0;
 let renderMemo = null;
+const MARKET_STORE_KEY = "gestione-channel-market-benchmarks-v1";
+const MARKET_API_BASE = ["127.0.0.1", "localhost"].includes(window.location.hostname) ? "" : "http://127.0.0.1:8787";
+const marketApiUrl = path => `${MARKET_API_BASE}${path}`;
+let marketRunning = false;
+let marketMessage = "";
+let marketSort = "rank";
+let marketPollTimer = null;
+let marketRuns = (() => {
+  try { return JSON.parse(localStorage.getItem(MARKET_STORE_KEY) || "[]"); } catch (_) { return []; }
+})();
+function marketIsoOffset(days) {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+let marketDraft = {
+  propertyName: "",
+  destination: "",
+  checkin: marketIsoOffset(30),
+  checkout: marketIsoOffset(32),
+  adults: 2,
+  children: 0,
+  rooms: 1,
+  maxResults: 50,
+  ownPriceTotal: "",
+};
 
 const SEASONALITY_RULES = [
   { id: "altissima", label: "Altissima stagione", markup: 0.15 },
@@ -2066,7 +2093,7 @@ function render(navigationOnly = false) {
     seasonality: new Map(),
     touristTax: new Map(),
   };
-  const map = { dashboard: renderDashboard, guide: renderTechnicalGuide, inputs: renderInputs, rateslab: renderRatesLab, booking: () => renderPromo("Booking.com", 31, 36, 68, 87), expedia: () => renderPromo("Expedia", 40, 45, 92, 101), airbnb: () => renderPromo("Airbnb", 49, 54, 106, 117), vrbo: () => renderPromo("Vrbo", 58, 64, 121, 127), master: renderMaster, rms: renderRms, roomnight: renderRoomNight, forecast: renderForecast, touristtax: renderTouristTax, strategies: renderStrategies, workbook: renderWorkbook, simulationhistory: renderSimulationHistory, log: renderLog };
+  const map = { dashboard: renderDashboard, market: renderMarketAnalysis, guide: renderTechnicalGuide, inputs: renderInputs, rateslab: renderRatesLab, booking: () => renderPromo("Booking.com", 31, 36, 68, 87), expedia: () => renderPromo("Expedia", 40, 45, 92, 101), airbnb: () => renderPromo("Airbnb", 49, 54, 106, 117), vrbo: () => renderPromo("Vrbo", 58, 64, 121, 127), master: renderMaster, rms: renderRms, roomnight: renderRoomNight, forecast: renderForecast, touristtax: renderTouristTax, strategies: renderStrategies, workbook: renderWorkbook, simulationhistory: renderSimulationHistory, log: renderLog };
   const html = `${percentDatalists()}${map[currentPage]()}${renderCalculatorPopup()}`;
   content.innerHTML = html;
   bindInputs(content);
@@ -5076,7 +5103,7 @@ function renderMaster() {
 function renderRms() {
   return `${head("Ottimizzazione RMS Prices", "Sezione integrata del simulatore RMS: strutture, camere, target, calendario, matrici e storico simulazioni.")}
   <section class="panel rms-frame-panel">
-    <iframe class="rms-frame" src="public/channel/rms/index.html" title="Ottimizzazione RMS Prices"></iframe>
+    <iframe class="rms-frame" src="rms/index.html" title="Ottimizzazione RMS Prices"></iframe>
   </section>`;
 }
 function renderRoomNight() {
@@ -5621,6 +5648,135 @@ function exportSimulationComparison(entryId) {
   link.click();
   URL.revokeObjectURL(link.href);
 }
+function marketMoney(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString("it-IT", { style: "currency", currency: "EUR" }) : "n.d.";
+}
+function persistMarketRuns() {
+  localStorage.setItem(MARKET_STORE_KEY, JSON.stringify(marketRuns.slice(0, 30)));
+}
+function marketCsvCell(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+function downloadMarketRun(run, format) {
+  let body;
+  let type;
+  if (format === "json") {
+    body = JSON.stringify(run, null, 2);
+    type = "application/json;charset=utf-8";
+  } else {
+    const rows = [["Posizione", "Struttura", "Zona", "Totale EUR", "EUR/notte", "Voto", "Recensioni", "Delta vs struttura %", "URL"]];
+    (run.listings || []).forEach(item => rows.push([item.rank, item.name, item.address, item.total, item.nightly, item.score, item.reviews, item.deltaVsOwnPct, item.url]));
+    body = "\ufeff" + rows.map(row => row.map(marketCsvCell).join(";")).join("\r\n");
+    type = "text/csv;charset=utf-8";
+  }
+  const blob = new Blob([body], { type });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `analisi-mercato-${String(run.query?.destination || "booking").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${run.query?.checkin || "data"}.${format}`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+async function pollMarketAnalysis() {
+  try {
+    const response = await fetch(marketApiUrl("/api/market/status"), { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const status = await response.json();
+    marketMessage = status.message || "Raccolta in corso...";
+    marketRunning = Boolean(status.running);
+    if (status.result && !status.running) {
+      const result = status.result;
+      if (!["error", "blocked", "not_allowed", "search_not_applied"].includes(result.status)) {
+        marketRuns = [result, ...marketRuns.filter(item => item.id !== result.id)].slice(0, 30);
+        persistMarketRuns();
+      }
+      marketMessage = result.message || marketMessage;
+      showSaveConfirmation(result.status === "complete" ? "Analisi di mercato completata e salvata" : marketMessage);
+    }
+    if (currentPage === "market") render();
+    if (marketRunning) marketPollTimer = setTimeout(pollMarketAnalysis, 1800);
+  } catch (error) {
+    marketRunning = false;
+    marketMessage = "Agente locale non raggiungibile. Avvia AVVIA_GESTIONE_CHANNEL.bat e riprova.";
+    if (currentPage === "market") render();
+  }
+}
+async function startMarketAnalysis() {
+  if (marketRunning) return;
+  if (!marketDraft.destination.trim() || !marketDraft.checkin || !marketDraft.checkout) {
+    marketMessage = "Inserisci destinazione, arrivo e partenza.";
+    render();
+    return;
+  }
+  marketRunning = true;
+  marketMessage = "Collegamento all'agente locale...";
+  render();
+  try {
+    const ownPrice = Number(String(marketDraft.ownPriceTotal || "").replace(",", "."));
+    const payload = { ...marketDraft, ownPriceTotal: ownPrice > 0 ? ownPrice : null };
+    const response = await fetch(marketApiUrl("/api/market/start"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    marketMessage = data.message || "Analisi avviata. Non chiudere la finestra Chrome.";
+    clearTimeout(marketPollTimer);
+    marketPollTimer = setTimeout(pollMarketAnalysis, 800);
+  } catch (error) {
+    marketRunning = false;
+    marketMessage = String(error?.message || error).includes("Failed to fetch")
+      ? "Questa funzione richiede il server locale. Avvia AVVIA_GESTIONE_CHANNEL.bat e apri l'indirizzo indicato."
+      : `Analisi non avviata: ${error?.message || error}`;
+    render();
+  }
+}
+function renderMarketAnalysis() {
+  const run = marketRuns[0] || null;
+  const listings = run ? [...(run.listings || [])].sort((a, b) => {
+    if (marketSort === "nightly") return (a.nightly ?? Number.MAX_SAFE_INTEGER) - (b.nightly ?? Number.MAX_SAFE_INTEGER);
+    if (marketSort === "score") return (b.score ?? -1) - (a.score ?? -1);
+    return (a.rank || 0) - (b.rank || 0);
+  }) : [];
+  const summary = run?.summary || {};
+  const rows = listings.map(item => `<tr>
+    <td class="num"><b>${item.rank}</b></td>
+    <td><b>${escapeHtml(item.name)}</b>${item.badges?.length ? `<small>${escapeHtml(item.badges.join(" · "))}</small>` : ""}</td>
+    <td>${escapeHtml(item.address || "n.d.")}</td>
+    <td class="num"><b>${marketMoney(item.total)}</b></td>
+    <td class="num"><b>${marketMoney(item.nightly)}</b></td>
+    <td class="num">${item.score == null ? "n.d." : `${item.score}/10`}</td>
+    <td class="num">${item.reviews ?? "n.d."}</td>
+    <td class="num market-delta ${item.deltaVsOwnPct == null ? "" : item.deltaVsOwnPct > 0 ? "is-higher" : "is-lower"}">${item.deltaVsOwnPct == null ? "n.d." : `${item.deltaVsOwnPct > 0 ? "+" : ""}${item.deltaVsOwnPct}%`}</td>
+    <td>${item.url ? `<a class="market-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">Apri</a>` : "—"}</td>
+  </tr>`).join("");
+  const history = marketRuns.slice(1).map(item => `<div class="market-history-row"><span><b>${escapeHtml(item.query?.destination || "Ricerca")}</b><small>${escapeHtml(item.query?.checkin || "")} → ${escapeHtml(item.query?.checkout || "")} · ${item.summary?.properties || 0} strutture · mediana ${marketMoney(item.summary?.medianNightly)}</small></span><span><button data-market-open="${escapeHtml(item.id)}">Apri</button><button class="danger" data-market-delete="${escapeHtml(item.id)}">Elimina</button></span></div>`).join("");
+  return `${head("Analisi di mercato", "Benchmark dinamico delle tariffe pubbliche Booking.com per destinazione, date e occupazione.")}
+    <section class="panel market-search-panel">
+      <div class="market-form">
+        <label class="wide"><span>Struttura di riferimento</span><input data-market-field="propertyName" value="${escapeHtml(marketDraft.propertyName)}" placeholder="Nome struttura"></label>
+        <label class="wide"><span>Destinazione / zona / indirizzo *</span><input data-market-field="destination" value="${escapeHtml(marketDraft.destination)}" placeholder="Es. Bari centro o Via Roma 10, Lecce"></label>
+        <label><span>Arrivo *</span><input type="date" data-market-field="checkin" value="${escapeHtml(marketDraft.checkin)}"></label>
+        <label><span>Partenza *</span><input type="date" data-market-field="checkout" value="${escapeHtml(marketDraft.checkout)}"></label>
+        <label><span>Adulti</span><input type="number" min="1" max="30" data-market-field="adults" value="${marketDraft.adults}"></label>
+        <label><span>Bambini</span><input type="number" min="0" max="20" data-market-field="children" value="${marketDraft.children}"></label>
+        <label><span>Camere</span><input type="number" min="1" max="10" data-market-field="rooms" value="${marketDraft.rooms}"></label>
+        <label><span>Concorrenti</span><select data-market-field="maxResults"><option value="20" ${marketDraft.maxResults === 20 ? "selected" : ""}>20</option><option value="50" ${marketDraft.maxResults === 50 ? "selected" : ""}>50</option><option value="100" ${marketDraft.maxResults === 100 ? "selected" : ""}>100</option></select></label>
+        <label><span>Tuo prezzo totale</span><input inputmode="decimal" data-market-field="ownPriceTotal" value="${escapeHtml(marketDraft.ownPriceTotal)}" placeholder="Opzionale"></label>
+        <div class="market-start"><button class="primary" data-market-start ${marketRunning ? "disabled" : ""}>${marketRunning ? "Raccolta in corso..." : "Avvia benchmark"}</button></div>
+      </div>
+      <p class="market-disclaimer">Si apre una finestra Chrome dedicata. Non chiuderla durante la raccolta. Il sistema legge soltanto risultati pubblici e si ferma davanti a login, CAPTCHA o blocchi.</p>
+      ${marketMessage ? `<div class="market-status" role="status">${escapeHtml(marketMessage)}</div>` : ""}
+    </section>
+    ${run ? `<section class="panel market-results-head">
+      <div><h3>${escapeHtml(run.query?.destination || "Ultima rilevazione")}</h3><p>${escapeHtml(run.query?.checkin || "")} → ${escapeHtml(run.query?.checkout || "")} · ${run.query?.nights || 0} notti · ${run.query?.adults || 0} adulti · ${escapeHtml(new Date(run.generatedAt).toLocaleString("it-IT"))}</p></div>
+      <div><button data-market-export="csv">Esporta CSV</button><button data-market-export="json">Esporta JSON</button></div>
+    </section>
+    <section class="market-kpis"><article><small>Strutture</small><b>${summary.properties || 0}</b></article><article><small>Con prezzo</small><b>${summary.pricedProperties || 0}</b></article><article><small>Minimo / notte</small><b>${marketMoney(summary.minNightly)}</b></article><article><small>Mediana / notte</small><b>${marketMoney(summary.medianNightly)}</b></article><article><small>Massimo / notte</small><b>${marketMoney(summary.maxNightly)}</b></article><article><small>Voto medio</small><b>${summary.averageScore == null ? "n.d." : `${summary.averageScore}/10`}</b></article></section>
+    <section class="panel market-table-panel"><div class="market-table-toolbar"><div><h3>Confronto strutture</h3><p>Il prezzo per notte deriva dal totale pubblico diviso per le notti richieste.</p></div><label>Ordina <select data-market-sort><option value="rank" ${marketSort === "rank" ? "selected" : ""}>Posizione Booking</option><option value="nightly" ${marketSort === "nightly" ? "selected" : ""}>Prezzo crescente</option><option value="score" ${marketSort === "score" ? "selected" : ""}>Punteggio</option></select></label></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Struttura</th><th>Zona</th><th class="num">Totale</th><th class="num">EUR/notte</th><th class="num">Voto</th><th class="num">Recensioni</th><th class="num">Delta</th><th>Scheda</th></tr></thead><tbody>${rows || `<tr><td colspan="9">${escapeHtml(run.message || "Nessun risultato disponibile.")}</td></tr>`}</tbody></table></div></section>` : `<section class="panel market-empty"><h3>Nessuna rilevazione salvata</h3><p>Compila i parametri e avvia il primo benchmark.</p></section>`}
+    ${marketRuns.length > 1 ? `<section class="panel"><h3>Storico rilevazioni</h3><div class="market-history">${history}</div></section>` : ""}`;
+}
 function renderLog() { return `${head("Storico operazioni", "Cronologia interna delle modifiche, salvataggi e annullamenti della sessione.")}<section class="panel"><h3>Ultime operazioni</h3><div class="log-list">${state.logs.map(l => `<div class="log-item"><strong>${l.t}</strong><br>${escapeHtml(l.msg)}</div>`).join("")}</div></section>`; }
 function table(headers, rows, numeric = []) { return `<div class="table-wrap"><table><thead><tr>${headers.map((h,i)=>`<th class="${numeric.includes(i)?"num":""}">${h}</th>`).join("")}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map((v,i)=>`<td class="${numeric.includes(i)?"num":""}">${typeof v === "string" && (v.includes("data-sheet=") || v.includes("data-date-row=") || v.includes("data-seasonality-select") || v.includes("data-extra-field=") || v.includes("data-extra-money=") || v.includes("data-auto-value")) ? v : escapeHtml(formatValue(v, null, headers[i] || ""))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`; }
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch])); }
@@ -5712,6 +5868,37 @@ function deleteCustomPromo(id) {
 function bindPageEvents(root) {
   bindStableTabNavigation(root);
   bindTechnicalGuideEvents(root);
+  root.querySelectorAll("[data-market-field]").forEach(control => {
+    const update = () => {
+      const field = control.dataset.marketField;
+      marketDraft[field] = ["adults", "children", "rooms", "maxResults"].includes(field)
+        ? Number(control.value)
+        : control.value;
+    };
+    control.oninput = update;
+    control.onchange = update;
+  });
+  root.querySelector("[data-market-start]")?.addEventListener("click", () => void startMarketAnalysis());
+  root.querySelector("[data-market-sort]")?.addEventListener("change", event => {
+    marketSort = event.currentTarget.value;
+    render();
+  });
+  root.querySelectorAll("[data-market-export]").forEach(button => button.onclick = () => {
+    if (marketRuns[0]) downloadMarketRun(marketRuns[0], button.dataset.marketExport);
+  });
+  root.querySelectorAll("[data-market-open]").forEach(button => button.onclick = () => {
+    const selected = marketRuns.find(item => item.id === button.dataset.marketOpen);
+    if (!selected) return;
+    marketRuns = [selected, ...marketRuns.filter(item => item.id !== selected.id)];
+    persistMarketRuns();
+    render();
+  });
+  root.querySelectorAll("[data-market-delete]").forEach(button => button.onclick = () => {
+    marketRuns = marketRuns.filter(item => item.id !== button.dataset.marketDelete);
+    persistMarketRuns();
+    render();
+    showSaveConfirmation("Rilevazione eliminata dallo storico");
+  });
   root.querySelectorAll("[data-open-rates-lab]").forEach(button => button.onclick = () => {
     const groupId = button.dataset.openRatesLab;
     initRatesLab(groupId, !ratesLab || ratesLab.groupId !== groupId);
@@ -6383,6 +6570,7 @@ document.getElementById("importFile").onchange = async e => { const file = e.tar
 
 render();
 updateSaveState();
+
 
 
 
