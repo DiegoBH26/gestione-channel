@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   color-scheme: light;
   --bg: #eef3f4;
   --panel: #ffffff;
@@ -12,6 +12,61 @@
   --danger: #b91c1c;
   --good: #15803d;
   --shadow: 0 14px 35px rgba(21, 36, 40, .12);
+}
+
+/* Analisi di mercato */
+.market-search-panel { border-top: 3px solid var(--navy, #0b3158); }
+.market-form { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 12px; align-items: end; }
+.market-form label { display: grid; gap: 6px; color: #0b3158; font-size: 12px; font-weight: 800; }
+.market-form label.wide { grid-column: span 2; }
+.market-form input,
+.market-form select,
+.market-table-toolbar select { width: 100%; height: 40px; border: 1px solid #aac0d2; border-radius: 6px; background: #fff; padding: 0 10px; color: #082f56; font: inherit; }
+.market-start { display: flex; align-items: end; }
+.market-start button { width: 100%; min-height: 40px; }
+.market-disclaimer { margin: 13px 0 0; color: #526d84; font-size: 12px; line-height: 1.55; }
+.market-status { margin-top: 12px; border: 1px solid #98c9b0; background: #edf9f2; color: #145c38; padding: 11px 13px; border-radius: 6px; font-weight: 700; }
+.market-results-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.market-results-head h3,
+.market-table-toolbar h3 { margin: 0; }
+.market-results-head p,
+.market-table-toolbar p { margin: 4px 0 0; color: #60788d; font-size: 12px; }
+.market-results-head > div:last-child { display: flex; gap: 8px; flex-wrap: wrap; }
+.market-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 14px 0; border: 1px solid #bdd0df; background: #fff; }
+.market-kpis article { min-height: 78px; padding: 14px; border-right: 1px solid #d7e2ea; }
+.market-kpis article:last-child { border-right: 0; }
+.market-kpis small { display: block; color: #60788d; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.market-kpis b { display: block; margin-top: 8px; color: #082f56; font-size: 19px; }
+.market-table-panel { padding: 0; overflow: hidden; }
+.market-table-toolbar { display: flex; justify-content: space-between; align-items: end; gap: 20px; padding: 15px 16px; border-bottom: 1px solid #d7e2ea; }
+.market-table-toolbar label { display: flex; align-items: center; gap: 8px; color: #0b3158; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.market-table-toolbar select { width: auto; min-width: 170px; }
+.market-table-panel td small { display: block; margin-top: 4px; color: #85630d; }
+.market-delta.is-higher { color: #b42318; font-weight: 800; }
+.market-delta.is-lower { color: #087443; font-weight: 800; }
+.market-link { color: #075b96; font-weight: 800; text-decoration: underline; }
+.market-empty { padding: 40px 20px; text-align: center; }
+.market-history { margin-top: 10px; border-top: 1px solid #d7e2ea; }
+.market-history-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #d7e2ea; }
+.market-history-row span:first-child { display: grid; gap: 4px; }
+.market-history-row small { color: #60788d; }
+.market-history-row span:last-child { display: flex; gap: 7px; }
+@media (max-width: 1100px) {
+  .market-form { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+  .market-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .market-kpis article:nth-child(3) { border-right: 0; }
+  .market-kpis article:nth-child(-n+3) { border-bottom: 1px solid #d7e2ea; }
+}
+@media (max-width: 700px) {
+  .market-form { grid-template-columns: 1fr 1fr; }
+  .market-form label.wide { grid-column: 1 / -1; }
+  .market-results-head,
+  .market-table-toolbar,
+  .market-history-row { align-items: stretch; flex-direction: column; }
+  .market-kpis { grid-template-columns: 1fr 1fr; }
+  .market-kpis article:nth-child(3) { border-right: 1px solid #d7e2ea; }
+  .market-kpis article:nth-child(even) { border-right: 0; }
+  .market-kpis article { border-bottom: 1px solid #d7e2ea; }
 }
 
 /* Technical and training guide */
@@ -1708,3 +1763,4 @@ tr:hover td { background: #f8fbfe; }
     height: auto !important;
   }
 }
+
